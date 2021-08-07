@@ -30,7 +30,7 @@ const IMPORT_PREFIX: &str = "nsi";
 pub struct FileWriter {
     base_path: String,
     writer: Option<Box<dyn std::io::Write>>,
-    target_name_space: Option<String>,
+    target_name_space: Vec<String>,
 
     /// A map of WSDL ports by operation name to their type.
     ///
@@ -74,7 +74,7 @@ impl Default for FileWriter {
         FileWriter {
             base_path: String::default(),
             writer: Option::Some(Box::new(stdout())),
-            target_name_space: Option::None,
+            target_name_space: Vec::new(),
             port_types: HashMap::new(),
             message_types: HashMap::new(),
             namespaces: HashMap::new(),
@@ -103,7 +103,7 @@ impl FileWriter {
         FileWriter {
             base_path: String::default(),
             writer: Option::Some(Box::new(dest_file_name)),
-            target_name_space: Option::None,
+            target_name_space: Vec::new(),
             port_types: HashMap::new(),
             message_types: HashMap::new(),
             namespaces: HashMap::new(),
@@ -264,6 +264,11 @@ pub enum SoapError<E> {
     }
 
     fn print_definitions(&mut self, node: &Node) -> WriterResult<()> {
+        let tns = self.get_some_attribute(node, "targetNamespace");
+        if let Some(s) = tns {
+            self.target_name_space.push(s.to_string());
+        }
+
         node.children()
             .filter(|child| child.tag_name().name() == "types")
             .try_for_each(|node| self.print_types(&node))?;
@@ -284,6 +289,9 @@ pub enum SoapError<E> {
             .filter(|child| child.tag_name().name() == "service")
             .for_each(|node| self.print_service(&node));
 
+        if tns.is_some() {
+            self.target_name_space.pop();
+        }
         Ok(())
     }
 
@@ -296,9 +304,10 @@ pub enum SoapError<E> {
     }
 
     fn print_xsd(&mut self, node: &Node) -> WriterResult<()> {
-        self.target_name_space = self
-            .get_some_attribute(node, "targetNamespace")
-            .map(|s| s.to_string());
+        let tns = self.get_some_attribute(node, "targetNamespace");
+        if let Some(s) = tns {
+            self.target_name_space.push(s.to_string());
+        }
 
         self.find_namespaces(node);
 
@@ -331,6 +340,10 @@ pub enum SoapError<E> {
                 _ => Ok(()),
             })?;
 
+        if tns.is_some() {
+            self.target_name_space.pop();
+        }
+
         Ok(())
     }
 
@@ -350,32 +363,33 @@ pub enum SoapError<E> {
         };
 
         let namespace = match self.get_some_attribute(node, "namespace") {
-            None => self.target_name_space.clone().unwrap_or_default(),
+            None => self
+                .target_name_space
+                .last()
+                .map(|s| s.clone())
+                .unwrap_or_default(),
             Some(n) => n.to_string(),
         };
+
+        self.target_name_space.push(namespace);
 
         self.import_count += 1;
         let prefix = format!("{}{}", IMPORT_PREFIX, self.import_count);
 
-        let my_tns = self.target_name_space.replace(namespace);
         let my_prefix = self.ns_prefix.clone();
         self.ns_prefix = prefix;
 
         self.process_file_in_path(name, false)?;
 
-        // restore old namespace from before import
-        if let Some(old_tns) = my_tns {
-            self.target_name_space.replace(old_tns);
-        }
-
         self.ns_prefix = my_prefix;
 
+        self.target_name_space.pop();
         Ok(())
     }
 
     fn on_default_namespace(&self) -> bool {
         if let (Some(default_namespace), Some(namespace)) =
-            (&self.default_namespace, &self.target_name_space)
+            (&self.default_namespace, self.target_name_space.last())
         {
             return default_namespace == namespace;
         }
@@ -457,7 +471,7 @@ pub enum SoapError<E> {
             let field_name = self.shield_reserved_names(&snake_name);
 
             // fields
-            let mut element = if let Some(_tns) = &self.target_name_space {
+            let mut element = if let Some(_tns) = self.target_name_space.last() {
                 if is_top_level {
                     let mut e = Element::new(field_name, ElementType::Field);
                     e.xml_name = Option::Some(element_name.to_string());
@@ -543,7 +557,7 @@ pub enum SoapError<E> {
     }
 
     fn init_element(&self, name: &str, is_top_level: bool) -> Element {
-        let some_tns = self.target_name_space.clone();
+        let some_tns = self.target_name_space.last();
 
         if let Some(tns) = some_tns {
             let element_name = to_pascal_case(name);
@@ -554,7 +568,7 @@ pub enum SoapError<E> {
                 e.xml_name = Option::Some(name.to_string());
 
                 // declare all namespaces
-                e.add_ns("tns", &tns);
+                e.add_ns("tns", tns);
                 e.add_ns("xsi", "http://www.w3.org/2001/XMLSchema-instance");
                 e
             } else if self.on_default_namespace() {
@@ -563,7 +577,7 @@ pub enum SoapError<E> {
             } else {
                 e.prefix = Option::Some(self.ns_prefix.to_string());
                 e.xml_name = Option::Some(name.to_string());
-                e.add_ns(&self.ns_prefix, &tns);
+                e.add_ns(&self.ns_prefix, tns);
                 e
             }
         } else {
@@ -808,7 +822,7 @@ pub enum SoapError<E> {
 
         if let Some(type_name) = self.get_some_attribute(node, "element") {
             let type_name = self.fetch_type(type_name);
-            
+
             let mut element = Element::new(
                 self.shield_reserved_names(&to_snake_case(element_name)),
                 ElementType::Field,
@@ -816,7 +830,7 @@ pub enum SoapError<E> {
             element.flatten = true;
             element.field_type = Option::Some(format!("{}::{}", TYPES_MOD, type_name));
             parent.add(element);
-            
+
             self.message_types
                 .insert(message_name.to_string(), type_name.clone());
         }
@@ -956,7 +970,7 @@ pub enum SoapError<E> {
     }
 
     fn print_default_constructor(&mut self, struct_name: &str, parent: &mut Element) {
-        let url = match &self.target_name_space {
+        let url = match self.target_name_space.last() {
             None => "String::new()".to_string(),
             Some(tns) => tns.to_string(),
         };
@@ -1164,7 +1178,7 @@ pub enum SoapError<E> {
     }
 
     fn construct_soap_wrapper(&self, soap_name: &str, body_type: &str) -> String {
-        let tns = match &self.target_name_space {
+        let tns = match self.target_name_space.last() {
             None => "Option::None".to_string(),
             Some(t) => format!("Option::Some(\"{}\".to_string())", t),
         };
@@ -1430,14 +1444,14 @@ pub enum SoapError<E> {
         parent: &mut Element,
     ) {
         let action = match soap_action {
-            None => match &self.target_name_space {
+            None => match self.target_name_space.last() {
                 None => "undefined".to_string(),
                 Some(tns) => format!("{}/{}", tns, operation_name),
             },
             Some(sa) => sa.to_string(),
         };
 
-        let xmlns = match &self.target_name_space {
+        let xmlns = match self.target_name_space.last() {
             None => "Option::None".to_string(),
             Some(tns) => format!("Option::Some(\"{}\".to_string())", tns),
         };
