@@ -172,6 +172,8 @@ impl FileWriter {
             #![allow(dead_code)]           
             #![allow(unused_imports)]
             use yaserde::{{YaSerialize, YaDeserialize}};
+            use yaserde_derive::*;
+            use log::{debug, info, warn, error};
             use std::io::{Read, Write};
             
             pub const SOAP_ENCODING: &str = "http://www.w3.org/2003/05/soap-encoding";
@@ -204,9 +206,25 @@ impl FileWriter {
         soap_response.field_type =
             Option::Some("Result<(reqwest::StatusCode, String), reqwest::Error>".to_string());
 
+        let mut soap_error = Element::new("SoapError", ElementType::Static);
+        soap_error.set_content(
+            r#"#[derive(Debug)]
+pub enum SoapError<E> {
+    Fault(E),
+    RequestError(reqwest::Error),
+    XmlError(std::string::String),
+}
+"#,
+        );
+
+        let mut soap_result = Element::new("SoapResult", ElementType::Static);
+        soap_result.set_content("pub type SoapResult<T, E> = Result<T, SoapError<E>>;\n");
+
         self.root.add(header);
         self.root.add(soap_fault);
         self.root.add(soap_response);
+        self.root.add(soap_error);
+        self.root.add(soap_result);
     }
 
     /// print parses the root of the XML file
@@ -380,10 +398,13 @@ impl FileWriter {
         let as_vec = { !matches!(self.get_some_attribute(node, "maxOccurs"), Some("1") | None) };
 
         let as_option = {
-            matches!((
-                 self.get_some_attribute(node, "nillable"),
-                 self.get_some_attribute(node, "minOccurs"),
-             ), (Some(_), _) | (_, Some("0")))
+            matches!(
+                (
+                    self.get_some_attribute(node, "nillable"),
+                    self.get_some_attribute(node, "minOccurs"),
+                ),
+                (Some(_), _) | (_, Some("0"))
+            )
         };
 
         let maybe_complex = node
@@ -1308,12 +1329,12 @@ impl FileWriter {
         let output_template = if has_output {
             if has_fault {
                 format!(
-                    "-> Result<{2}::{0}, Option<{2}::{1}>>",
+                    "-> SoapResult<{2}::{0}, Option<{2}::{1}>>",
                     output_type, fault_soap_name, PORTS_MOD,
                 )
             } else {
                 format!(
-                    "-> Result<{}::{}, Option<SoapFault>>",
+                    "-> SoapResult<{}::{}, Option<SoapFault>>",
                     PORTS_MOD, output_type
                 )
             }
@@ -1404,13 +1425,11 @@ impl FileWriter {
         let (status, response) = self.send_soap_request(&__request, "{3}")
                     .await
                     .map_err(|err| {{
-                        warn!("Failed to send SOAP request: {{:?}}", err);
-                        None
+                        SoapError::RequestError(err)
                     }})?;
 
         let r: {2}SoapEnvelope = from_str(&response).map_err(|err| {{
-                        warn!("Failed to unmarshal SOAP response: {{:?}}", err);
-                        None
+                        SoapError::XmlError(err)
                     }})?;
         "#,
                 input_variable, input_type, output_type, action, xmlns
@@ -1422,7 +1441,7 @@ impl FileWriter {
             r#"if status.is_success() {
             Ok(r.body.body)
         } else {
-            Err(r.body.fault)
+            Err(SoapError::Fault(r.body.fault))
         }"#,
         );
     }

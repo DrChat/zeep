@@ -418,11 +418,11 @@ impl Element {
         let function_result = match &args.fault_type {
             None => match &args.output_type {
                 None => String::new(),
-                Some(o) => format!("-> {}", o),
+                Some(o) => format!("-> SoapResult<{}, ()>", o),
             },
             Some(fault) => match &args.output_type {
                 None => format!("-> {}", fault),
-                Some(o) => format!("-> Result<{},{}>", o, fault),
+                Some(o) => format!("-> SoapResult<{}, {}>", o, fault),
             },
         };
 
