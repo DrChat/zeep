@@ -31,7 +31,28 @@ pub struct FileWriter {
     base_path: String,
     writer: Option<Box<dyn std::io::Write>>,
     target_name_space: Option<String>,
+
+    /// A map of WSDL ports by operation name to their type.
+    ///
+    /// e.g:
+    /// ```xml
+    /// <wsdl:operation name="GetAuthConfig">
+    ///   <wsdl:input message="tns:GetAuthConfigSoapIn" />
+    ///   <wsdl:output message="tns:GetAuthConfigSoapOut" />
+    /// </wsdl:operation>
+    /// ```
+    /// This map would contain `GetAuthConfig` -> a [PortType] describing this port.
     port_types: HashMap<String, PortType>,
+
+    /// A map of WSDL message names -> associated types
+    ///
+    /// e.g:
+    /// ```xml
+    /// <wsdl:message name="GetAuthConfigSoapIn">
+    ///     <wsdl:part name="parameters" element="tns:GetAuthConfig" />
+    /// </wsdl:message>
+    /// ```
+    /// This map would contain `GetAuthConfigSoapIn` -> `GetAuthConfig`.
     message_types: HashMap<String, String>,
     namespaces: HashMap<String, String>,
     import_count: u32,
@@ -786,18 +807,18 @@ pub enum SoapError<E> {
         };
 
         if let Some(type_name) = self.get_some_attribute(node, "element") {
-            let type_name = format!("{}::{}", TYPES_MOD, self.fetch_type(type_name));
-
+            let type_name = self.fetch_type(type_name);
+            
             let mut element = Element::new(
                 self.shield_reserved_names(&to_snake_case(element_name)),
                 ElementType::Field,
             );
             element.flatten = true;
-            element.field_type = Option::Some(type_name.clone());
+            element.field_type = Option::Some(format!("{}::{}", TYPES_MOD, type_name));
             parent.add(element);
-
+            
             self.message_types
-                .insert(message_name.to_string(), type_name);
+                .insert(message_name.to_string(), type_name.clone());
         }
     }
 
@@ -1268,7 +1289,14 @@ pub enum SoapError<E> {
             match &port_type.output_type {
                 Some((output_name, Some(output_type))) => {
                     let soap_name = format!("Soap{}", output_type);
-                    (output_type.clone(), soap_name, output_name.clone(), true)
+                    let output_xml_name = self.message_types.get(output_name).unwrap();
+
+                    (
+                        output_type.clone(),
+                        soap_name,
+                        output_xml_name.clone(),
+                        true,
+                    )
                 }
                 _ => (String::new(), String::new(), String::new(), false),
             };
