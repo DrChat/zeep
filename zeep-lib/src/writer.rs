@@ -912,7 +912,8 @@ pub enum SoapError<E> {
         let mut client = Element::new(&struct_name, ElementType::Static);
         client.set_content(
             format!(
-                r#"pub struct {0} {{
+                r#"#[derive(Debug, Clone)]
+                pub struct {0} {{
                 client: reqwest::Client,
                 url: String,
                 credentials: Option<(String,String)>
